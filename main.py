@@ -2,6 +2,7 @@ from typing import Dict
 
 import numpy as np
 from sklearn.model_selection import train_test_split
+from tensorflow import keras
 
 from repen import utils
 from repen.datagen import batch_generator
@@ -23,18 +24,6 @@ def _check_datagen(dataset: str = 'wine'):
     return
 
 
-def _check_repen(dataset: str = 'wine'):
-    data, _ = utils.read_dataset(dataset, normalized=True)
-    model = REPEN(
-        model_name='test_model',
-        input_dim=data.shape[0],
-        embedding_dim=20,
-    )
-    model.compile()
-    model.summary()
-    return
-
-
 def train_validate_test_split(data: np.array, labels: np.array, **params):
     train_x, test_x, train_y, test_y = train_test_split(data, labels, test_size=0.4)
     validate_x, test_x, validate_y, test_y = train_test_split(test_x, test_y, test_size=0.5)
@@ -49,7 +38,7 @@ def train_validate_test_split(data: np.array, labels: np.array, **params):
 if __name__ == '__main__':
     _dataset = 'musk'
     _model_name = f'test_model_{_dataset}'
-    _delete_old = True
+    _delete_old = False
 
     if _delete_old:
         import shutil
@@ -68,37 +57,35 @@ if __name__ == '__main__':
         'unsorted': True,
     }
 
-    _data, _labels = utils.read_dataset(_dataset, normalized=True)
+    _data, _labels = utils.read_dataset(_dataset, normalized=True, adjust=True)
+    _initial_scores = utils.contaminate_labels(np.copy(_labels), fraction=0.1)
 
     # TODO: Use LeSiNN or other unsupervised detector to generate initial scores
-    _base_detector = utils.lesinn
-    _initial_scores = _base_detector(_data)
+    # _base_detector = utils.lesinn
+    # _initial_scores = _base_detector(_data)
 
     _train_gen, _val_gen, _test_gen = train_validate_test_split(_data, _initial_scores, **_datagen_params)
 
     _train_params: Dict = {
-        'steps_per_epoch': _data.shape[0] // _datagen_params['batch_size'],
-        'num_epochs': 32,
+        'steps_per_epoch': max(_data.shape[0] // _datagen_params['batch_size'], 256),
+        'num_epochs': 64,
         'verbose': 1,
+        'es_schedule': [1e-5, 10],
+        'lr_schedule': [0.1, 8, 4],
     }
     _train_params['validation_steps'] = _train_params['steps_per_epoch'] // 4
-    _train_params['es_schedule'] = [
-        1e-4,                              # min_delta
-        _train_params['num_epochs'] // 2,  # patience
-    ]
-    _train_params['lr_schedule'] = [
-        0.1,                               # factor
-        _train_params['num_epochs'] // 4,  # patience
-        _train_params['num_epochs'] // 8,  # cooldown
-    ]
 
     _model = REPEN(
         model_name=f'{_model_name}_{_model_number}',
         input_dim=_data.shape[1],
-        embedding_dim=20,
+        step_size=20,
+        embedding_size=20,
+        triplet_alpha=1000.,
     )
-    _model.compile()
+    _model.compile(optimizer=keras.optimizers.Adam(learning_rate=1e-3))
     _model.summary()
+
+    # exit(1)
 
     _model.train(_train_gen, _val_gen, **_train_params)
     _model.save()
@@ -111,5 +98,5 @@ if __name__ == '__main__':
 
     print(f'model {_model.model_name}, performance: {_line}')
 
-    _metrics = _model.predict(_data, _labels, _base_detector)
-    print(_metrics)
+    # _metrics = _model.predict(_data, _labels, _base_detector)
+    # print(_metrics)

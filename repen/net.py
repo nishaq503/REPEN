@@ -1,6 +1,8 @@
 import os
+from functools import reduce
 from typing import Callable
 from typing import Dict
+from typing import List
 from typing import Tuple
 
 import numpy as np
@@ -10,8 +12,9 @@ from . import utils
 
 
 class Triplet(keras.layers.Layer):
-    def __init__(self, **kwargs):
+    def __init__(self, alpha: float, **kwargs):
         self.is_placeholder = True
+        self.alpha: float = alpha
         super(Triplet, self).__init__(**kwargs)
 
     # noinspection PyMethodMayBeStatic
@@ -22,7 +25,7 @@ class Triplet(keras.layers.Layer):
         positive_distances = self._euclidean_sq(anchor, positive)
         negative_distances = self._euclidean_sq(anchor, negative)
         loss = negative_distances - positive_distances
-        return keras.backend.mean(keras.backend.maximum(0., 1000. - loss))
+        return keras.backend.mean(keras.backend.maximum(0., self.alpha - loss))
 
     def call(self, inputs, **kwargs):
         loss = self.loss(*inputs)
@@ -35,20 +38,41 @@ class REPEN:
             self,
             model_name: str,
             input_dim: int,
-            embedding_dim: int,
+            step_size: int,
+            embedding_size: int,
+            triplet_alpha: float
     ):
+        if not input_dim >= max(step_size, embedding_size):
+            raise ValueError(f'input-dim {input_dim} is too small compared to step-size {step_size} and embedding-size {embedding_size}')
+
+        if not (embedding_size <= step_size):
+            raise ValueError(f'embedding-size {embedding_size} should be smaller than step-size {step_size}.')
+
         self.model_name: str = model_name
 
         input_anchor = keras.layers.Input(shape=(input_dim,), name='input_anchor')
         input_positive = keras.layers.Input(shape=(input_dim,), name='input_positive')
         input_negative = keras.layers.Input(shape=(input_dim,), name='input_negative')
 
-        hidden_layer = keras.layers.Dense(embedding_dim, activation='relu', name='hidden_layer')
-        hidden_anchor = hidden_layer(input_anchor)
-        hidden_positive = hidden_layer(input_positive)
-        hidden_negative = hidden_layer(input_negative)
+        # layers = [
+        #     keras.layers.Dense(units=units, activation='relu', kernel_regularizer=keras.regularizers.l2(1e-3))
+        #     for units in reversed(range(step_size, input_dim, step_size))
+        # ]
+        layers = list()
+        layers.append(keras.layers.Dense(
+            units=embedding_size,
+            activation='relu',
+            kernel_regularizer=keras.regularizers.l2(1e-3),
+            name='hidden_output'
+        ))
 
-        output_layer = Triplet()([hidden_anchor, hidden_positive, hidden_negative])
+        layer_apply = lambda x: reduce(lambda res, layer: layer(res), layers, x)
+
+        hidden_anchor = layer_apply(input_anchor)
+        hidden_positive = layer_apply(input_positive)
+        hidden_negative = layer_apply(input_negative)
+
+        output_layer = Triplet(alpha=triplet_alpha)([hidden_anchor, hidden_positive, hidden_negative])
 
         self.model = keras.models.Model(
             inputs=[input_anchor, input_positive, input_negative],
@@ -63,7 +87,7 @@ class REPEN:
     def summary(self):
         return self.representation.summary()
 
-    def compile(self, optimizer: str = 'adadelta'):
+    def compile(self, optimizer):
         self.model.compile(optimizer=optimizer, loss=None)
         return
 
